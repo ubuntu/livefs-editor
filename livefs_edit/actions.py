@@ -15,6 +15,7 @@
 # along with this program.  If not, see
 # <http://www.gnu.org/licenses/>.
 import code
+import contextlib
 import enum
 import functools
 import glob
@@ -516,6 +517,22 @@ def cache_for_dir(ctxt, dir):
     return Cache()
 
 
+@contextlib.contextmanager
+def cdrom_mounted(ctxt, base):
+    # Starting with Ubuntu 26.04, the base squashfs carries an active
+    # file:/cdrom source (cdrom.sources) that apt-get update tries to read.
+    # During editing /cdrom is not mounted in the chroot.
+    # Bind-mount the (modified) ISO contents at /cdrom in the chroot so
+    # cdrom.sources resolves.
+    cdrom = pathlib.Path(base) / 'cdrom'
+    cdrom.mkdir(parents=True, exist_ok=True)
+    ctxt.add_mount(None, ctxt.p('new/iso'), str(cdrom), options='bind,ro')
+    try:
+        yield
+    finally:
+        ctxt.umount(str(cdrom))
+
+
 def download_missing_pool_debs(ctxt, cache):
     tdir = ctxt.tmpdir()
     pool_debs = set()
@@ -629,17 +646,19 @@ def unpack_initrd(ctxt, target='new/initrd'):
 @register_action()
 def install_packages(ctxt, packages: List[str]):
     base = ctxt.edit_squashfs(get_squash_names(ctxt)[0])
-    ctxt.run(['chroot', base, 'apt-get', 'update'])
-    env = os.environ.copy()
-    env['DEBIAN_FRONTEND'] = 'noninteractive'
-    env['LANG'] = 'C.UTF-8'
-    ctxt.run(['chroot', base, 'apt-get', 'install', '-y'] + packages, env=env)
+    with cdrom_mounted(ctxt, base):
+        ctxt.run(['chroot', base, 'apt-get', 'update'])
+        env = os.environ.copy()
+        env['DEBIAN_FRONTEND'] = 'noninteractive'
+        env['LANG'] = 'C.UTF-8'
+        ctxt.run(['chroot', base, 'apt-get', 'install', '-y'] + packages, env=env)
 
 
 @register_action()
 def add_apt_repository(ctxt, repo):
     base = ctxt.edit_squashfs(get_squash_names(ctxt)[0])
-    ctxt.run(['chroot', base, 'add-apt-repository', '-y', repo])
+    with cdrom_mounted(ctxt, base):
+        ctxt.run(['chroot', base, 'add-apt-repository', '-y', repo])
 
 
 @register_action()
